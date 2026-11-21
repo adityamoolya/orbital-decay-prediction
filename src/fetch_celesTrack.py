@@ -1,4 +1,4 @@
-
+# this script will fetch all the sattelite catalgoue number of decayed satellites and store in data/raw/decayed_satellites.csv
 import requests
 import pandas as pd
 from io import StringIO
