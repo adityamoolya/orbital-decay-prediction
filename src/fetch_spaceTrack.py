@@ -14,7 +14,8 @@ from pathlib import Path
 import pandas as pd
 from spacetrack import SpaceTrackClient
 import spacetrack.operators as op
-
+from dotenv import load_dotenv
+load_dotenv()
 # ---- config ----
 CATALOG_CSV = Path("data/raw/decayed_satellites.csv")
 NORAD_COLUMN = "NORAD Catalog Number"         
@@ -50,13 +51,25 @@ def fetch_one(st: SpaceTrackClient, norad_id: int) -> int | None:
                 orderby="epoch asc",
                 format="json",
             )
+
+            # --- validate before writing anything to disk ---
+            if isinstance(data, str):
+                data = json.loads(data)  # handle double-encoded responses
+
+            if isinstance(data, dict) and "error" in data:
+                raise RuntimeError(f"API error: {data['error']}")
+            if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict) and "error" in data[0]:
+                raise RuntimeError(f"API error: {data[0]['error']}")
+            if not isinstance(data, list):
+                raise RuntimeError(f"Unexpected response shape: {type(data)}")
+            # --- end validation ---
+
             if not data:
                 log.warning(f"{norad_id}: 0 records returned — check ID validity")
                 return 0
 
             out_path = OUT_DIR / f"{norad_id}.json"
             out_path.write_text(json.dumps(data, indent=2))
-
             log.info(f"{norad_id}: {len(data)} records saved")
             return len(data)
 
