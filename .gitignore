@@ -10,3 +10,5 @@ wheels/
 .venv
 .env
 data/raw/tle_history
+data/preprocessed/tle_data_205.csv
+data/preprocessed/tle_features.parquet

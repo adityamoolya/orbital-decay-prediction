@@ -15,7 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from spacetrack import SpaceTrackClient
 
-from fetch_spaceTrack import fetch_one  # reuse the fixed, validated fetch logic
+from data_collection.fetch_spaceTrack import fetch_one  # reuse the fixed, validated fetch logic
 
 TLE_DIR = Path("data/raw/tle_history")
 REFETCH_DELAY_SEC = 15  # deliberately slow — you already hit the limit once today
