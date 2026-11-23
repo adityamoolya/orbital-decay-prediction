@@ -37,7 +37,7 @@ import pandas as pd
 # PATHS
 # --------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-INPUT_PATH = BASE_DIR / "data" / "preprocessed" / "tle_features_modeling.parquet"
+INPUT_PATH = BASE_DIR / "data" / "curated" / "tle_features_modeling.parquet"
 OUTPUT_DIR = BASE_DIR / "data" / "modeling"
 OUTPUT_PARQUET = OUTPUT_DIR / "features.parquet"
 OUTPUT_CSV = OUTPUT_DIR / "features.csv"
