@@ -15,3 +15,7 @@ data/preprocessed/tle_features.parquet
 data/preprocessed/tle_features.csv
 data/curated/tle_features.csv
 data/curated/tle_features.parquet
+data/curated/tle_features_modeling.csv
+data/curated/tle_features_modeling.parquet
+
+*.csv
