@@ -1,81 +1,68 @@
+# Satellite Orbital Decay & Atmospheric Re-entry Prediction
 
-# Satellite Re-entry Prediction
-
-## Project Overview
-
-### Introduction
-
-Earth-orbiting satellites and other artificial objects gradually change their orbital characteristics due to several environmental and physical effects. One important phenomenon is **orbital decay**, where an object's orbit loses energy over time, potentially resulting in atmospheric re-entry.
-
-Predicting when an object will decay and re-enter Earth's atmosphere is a challenging problem because orbital behaviour is influenced by multiple factors, including:
-
-- Atmospheric drag.
-- Orbital altitude.
-- Orbital eccentricity.
-- Orbital inclination.
-- Solar and geomagnetic activity.
-- Object characteristics, including size and mass.
-- Changes in orbital parameters over time.
-
-This project aims to investigate satellite orbital behaviour using historical Two-Line Element (TLE) and General Perturbations (GP/OMM) data, perform data analysis and feature engineering, and eventually develop a machine learning model capable of estimating satellite decay or re-entry timelines.
-
-The central idea is to use historical orbital observations to understand how orbital parameters evolve and identify patterns associated with orbital decay.
-
-### Project Objectives
-
-1. Collect historical orbital data for satellites and other catalogued space objects.
-2. Build a structured dataset from historical TLE/OMM records.
-3. Integrate satellite decay information from an external catalogue.
-4. Validate and investigate the quality of the collected data.
-5. Perform exploratory data analysis (EDA).
-6. Identify useful orbital parameters and derive additional features.
-7. Investigate relationships between orbital characteristics and decay behaviour.
-8. Develop and evaluate a predictive model for satellite decay.
+An end-to-end data engineering, orbital mechanics profiling, and feature extraction pipeline designed to predict the atmospheric re-entry timelines of Earth-orbiting satellites from historical General Perturbations (GP) Two-Line Element (TLE) observations.
 
 ---
 
-## Data Sources
+## Executive Summary
 
-### 1. Space-Track
+Orbital decay is driven by non-linear physical interactions between an object's ballistic geometry and upper atmospheric drag. While deterministic numerical propagators (e.g., high-precision numerical orbit propagation models) require continuous atmospheric density forecasting and detailed satellite drag coefficients, empirical and statistical machine learning models offer a data-driven path to estimate remaining on-orbit lifetime directly from historical observation sequences.
 
-Space-Track provides historical orbital data through its API.
+This repository implements a production-grade, reproducible data pipeline spanning historical data ingestion, chronological deduplication, physical constraint validation, and dynamic feature extraction across **832,434 curated orbital observations** from **195 decayed LEO satellites** tracked between **1969 and 2026**.
 
-The project uses historical General Perturbations data, including orbital elements and associated satellite metadata.
+### Dataset & Architecture at a Glance
 
-Important fields include:
+| Pipeline Stage | Rows | Satellites | Columns | Primary Artifact | Description |
+|---|---:|---:|---:|---|---|
+| **1. Raw Consolidation** | 950,677 | 204 | 41 | `data/preprocessed/tle_features.parquet` | Lossless ingestion of 204 Space-Track JSON files + CelesTrak decay catalog join |
+| **2. Deduplicated Archive** | 832,452 | 204 | 41 | `data/preprocessed/tle_features_modeling.parquet` | Removed 118,225 redundant duplicate epoch records via verified `GP_ID` chronology |
+| **3. Filtered Modeling Input** | 832,434 | 195 | 41 | `data/preprocessed/tle_features_modeling.parquet` | Excluded 9 sub-10-record debris fragments unable to support rolling feature computation |
+| **4. Feature-Engineered Dataset** | **832,434** | **195** | **42** | `data/modeling/features.parquet` | Dynamic decay rates, multi-span rolling orbital statistics, lifetime index, and target label |
 
-- `NORAD_CAT_ID`
-- `OBJECT_NAME`
-- `OBJECT_ID`
-- `EPOCH`
-- `MEAN_MOTION`
-- `ECCENTRICITY`
-- `INCLINATION`
-- `RA_OF_ASC_NODE`
-- `ARG_OF_PERICENTER`
-- `MEAN_ANOMALY`
-- `BSTAR`
-- `MEAN_MOTION_DOT`
-- `MEAN_MOTION_DDOT`
+---
 
-The orbital records provide observations of an object's orbital state at different epochs.
+## Table of Contents
 
-### 2. CelesTrak
+1. [Data Sources & Ingestion](#data-sources--ingestion)
+2. [Repository Structure](#repository-structure)
+3. [Core Engineering Decisions & Methodology](#core-engineering-decisions--methodology)
+   - [Raw Data Immutability](#1-raw-data-immutability)
+   - [Decay Date Provenance Separation](#2-decay-date-provenance-separation)
+   - [Chronological Deduplication via GP_ID Agreement](#3-chronological-deduplication-via-gp_id-agreement)
+   - [Exclusion of Sparse Debris Fragments](#4-exclusion-of-sparse-debris-fragments)
+   - [Adoption of Native Space-Track Geometries](#5-adoption-of-native-space-track-geometries)
+   - [Target Formulation & Latency Noise Clipping](#6-target-formulation--latency-noise-clipping)
+   - [Dynamic Rates & Rolling Feature Engineering](#7-dynamic-rates--rolling-feature-engineering)
+   - [Zero-Leakage Group Validation Requirement](#8-zero-leakage-group-validation-requirement)
+4. [Exploratory Data Analysis & Empirical Findings](#exploratory-data-analysis--empirical-findings)
+   - [Temporal Distribution & Annual Tracking Density](#temporal-distribution--annual-tracking-density)
+   - [Orbital Decay Trajectories (Case Studies)](#orbital-decay-trajectories-case-studies)
+   - [Global Parameter Distributions & Correlations](#global-parameter-distributions--correlations)
+   - [Outlier Regimes & High-Eccentricity Orbits](#outlier-regimes--high-eccentricity-orbits)
+5. [Feature Engineering & Target Correlation Analysis](#feature-engineering--target-correlation-analysis)
+   - [Feature Rankings Against Target](#feature-rankings-against-target)
+   - [Missing Value Audit & Boundary Effects](#missing-value-audit--boundary-effects)
+6. [Pipeline Execution Guide](#pipeline-execution-guide)
+7. [Current Project Status & Roadmap](#current-project-status--roadmap)
 
-CelesTrak provides a catalogue containing satellite information, including decay dates for catalogued objects.
+---
 
-The catalogue is used to supplement the Space-Track dataset with decay information.
+## Data Sources & Ingestion
 
-The mapping is performed using:
+The pipeline aggregates data across two primary astronomical and space surveillance providers:
 
-| Space-Track      | CelesTrak                |
-| ---------------- | ------------------------ |
-| `NORAD_CAT_ID` | `NORAD Catalog Number` |
-| —               | `Decay Date`           |
+### 1. Space-Track.org API (18th Space Defense Squadron)
+Historical General Perturbations (GP) orbital element sets provided in OMM (Orbit Mean-Elements Message) JSON format:
+- **Identifiers:** `NORAD_CAT_ID`, `OBJECT_ID`, `OBJECT_NAME`
+- **Timestamps:** `EPOCH` (observation epoch), `CREATION_DATE` (record generation timestamp)
+- **Keplerian Elements:** `MEAN_MOTION` ($n$), `ECCENTRICITY` ($e$), `INCLINATION` ($i$), `RA_OF_ASC_NODE` ($\Omega$), `ARG_OF_PERICENTER` ($\omega$), `MEAN_ANOMALY` ($M$)
+- **Perturbations & Native Derived Parameters:** `BSTAR` (drag term $B^*$), `MEAN_MOTION_DOT` ($\dot{n}/2$), `MEAN_MOTION_DDOT` ($\ddot{n}/6$), `SEMIMAJOR_AXIS` ($a$), `PERIOD` ($T$), `APOAPSIS` ($r_a$), `PERIAPSIS` ($r_p$)
+- **Catalog Metadata:** `GP_ID`, `FILE`, `TLE_LINE0`, `TLE_LINE1`, `TLE_LINE2`, `OBJECT_TYPE`, `RCS_SIZE`, `COUNTRY_CODE`, `SITE`, `DECAY_DATE`
 
-The catalogue decay date is stored separately as `CATALOG_DECAY_DATE`.
-
-The original `DECAY_DATE` field from Space-Track is preserved without modification.
+### 2. CelesTrak Satellite Catalog
+Authoritative historical satellite decay registry:
+- Joined via `NORAD Catalog Number` $\rightarrow$ `NORAD_CAT_ID`.
+- Exports `CATALOG_DECAY_DATE`: 100% complete across all processed satellites.
 
 ---
 
@@ -86,512 +73,312 @@ satelite/
 │
 ├── data/
 │   ├── raw/
-│   │   ├── tle_history/
-│   │   │   └── Historical satellite TLE/OMM JSON files
-│   │   │
-│   │   └── decayed_satellites.csv
+│   │   ├── tle_history/                          # 204 raw Space-Track JSON historical files (read-only)
+│   │   └── decayed_satellites.csv                # CelesTrak ground-truth decay catalogue (read-only)
 │   │
 │   ├── preprocessed/
-│   │   ├── tle_features.csv
-│   │   └── tle_features.parquet
+│   │   ├── tle_features.parquet / .csv           # Raw consolidated archive (950,677 rows, 204 sats)
+│   │   └── tle_features_modeling.parquet / .csv  # Deduped & filtered dataset (832,434 rows, 195 sats)
 │   │
-│   └── curated/
-│       ├── tle_features.csv
-│       └── tle_features.parquet
+│   └── modeling/
+│       ├── features.parquet                      # Final feature-engineered matrix (832,434 rows, 42 cols)
+│       └── features.csv                          # Visual inspection CSV
 │
 ├── src/
-│   └── data_processing/
-│       ├── TLE_json_to_parquet.py
-│       ├── 02_database_validation.py
-│       └── 03_data_profiling.py
+│   ├── data_collection/
+│   │   ├── fetch_spaceTrack.py                   # Automated Space-Track API data collection
+│   │   ├── fetch_celesTrack.py                   # CelesTrak decay catalog downloader
+│   │   └── verify_tle_jsons.py                   # JSON syntax and schema integrity verifier
+│   │
+│   ├── data_processing/
+│   │   ├── 01_TLE_json_to_parquet.py             # Raw JSON ingestion, string decoding, CelesTrak join
+│   │   ├── 02_database_validation.py             # Checksum, range, and completeness validation
+│   │   ├── 03_data_profiling.py                  # Statistical profiling and initial distribution plots
+│   │   ├── 04_temporal_analysis.py               # Annual observation counts and satellite active spans
+│   │   ├── 05_satellite_history_analysis.py      # Individual satellite trajectory case studies
+│   │   ├── 06_outlier_analysis.py                # IQR-based outlier flagging across orbital elements
+│   │   ├── 07_outlier_investigation.py           # Deep physical dive into extreme orbital regimes
+│   │   ├── 08_duplicate_record_investigation.py  # Audit of identical (NORAD, EPOCH) observation pairs
+│   │   ├── 09_repeated_epoch_analysis.py         # GP_ID vs CREATION_DATE chronological proof
+│   │   ├── 10_apply_deduplication.py             # Production deduplication engine
+│   │   └── 11_apply_tle_count_filter.py          # Exclusion of sparse sub-10-TLE debris fragments
+│   │
+│   └── modeling/
+│       ├── 01_build_features.py                  # Label formulation, dynamic rates, and rolling stats
+│       └── 02_feature_validation.py              # Physics validation, null audit, target correlations
 │
 ├── reports/
-│   └── eda/
-│       └── plots/
+│   ├── eda/
+│   │   ├── column_profile.csv                    # Column completeness, memory footprint, null counts
+│   │   ├── numerical_statistics.csv              # Summary moments (mean, median, IQR, percentiles)
+│   │   ├── plots/                                # Global orbital distributions and correlation matrices
+│   │   ├── temporal/plots/                       # Annual observations and active satellite trends
+│   │   ├── satellite_history/                    # Decay trajectories (NORAD 4133, NORAD 7003)
+│   │   ├── outliers/plots/                       # Outlier boxplots and scatter distributions
+│   │   └── duplicates/                           # Repeated epoch agreement and spread summaries
+│   │
+│   └── modeling/
+│       ├── feature_validation_summary.csv        # Column null audits and infinite checks
+│       └── feature_correlations_target.csv       # Pearson and Spearman correlation rankings
 │
 └── README.md
 ```
 
-### Directory Responsibilities
+---
 
-| Directory                 | Purpose                                            |
-| ------------------------- | -------------------------------------------------- |
-| `data/raw/`             | Original downloaded data                           |
-| `data/raw/tle_history/` | Historical orbital records in JSON format          |
-| `data/preprocessed/`    | Merged and feature-engineered dataset              |
-| `data/curated/`         | Working dataset used for analysis                  |
-| `src/data_processing/`  | Data processing, validation, and profiling scripts |
-| `reports/eda/`          | Exploratory data analysis reports                  |
-| `reports/eda/plots/`    | Generated visualizations                           |
+## Core Engineering Decisions & Methodology
 
-**Data preservation principle:** Raw data is retained unchanged. Analysis and future feature-selection operations should produce separate outputs rather than silently modifying the original dataset.
+### 1. Raw Data Immutability
+All files in `data/raw/` are treated as immutable storage. Downstream transformations write to separate tiers (`data/preprocessed/` and `data/modeling/`) to guarantee data lineage and repeatability.
+
+### 2. Decay Date Provenance Separation
+- **`DECAY_DATE` (Space-Track native):** Populated in only 201 out of 950,677 observations (99.98% missing).
+- **`CATALOG_DECAY_DATE` (CelesTrak matched):** Populated across 100% of observations.
+- Both fields are preserved independently to prevent silent overwriting of official USSPACECOM records while providing a verified ground truth for modeling.
+
+### 3. Chronological Deduplication via GP_ID Agreement
+Exploration in `08_duplicate_record_investigation.py` identified 118,225 records sharing identical `(NORAD_CAT_ID, EPOCH)` keys. Analysis in `09_repeated_epoch_analysis.py` proved:
+1. Orbital parameter variations across duplicate records at identical epochs were negligible ($\Delta a < 10^{-4}\text{ km}$).
+2. Space-Track internal sequential identifier (`GP_ID`) and publication timestamp (`CREATION_DATE`) agreed on chronological order in **99.98% of comparable record pairs**.
+3. **Deduplication Rule:** Within each `(NORAD_CAT_ID, EPOCH)` group, retain the record with the maximum numeric `GP_ID`, breaking ties with the latest `CREATION_DATE`.
+
+```text
+Deduplication Outcome:
+  Rows before dedup:  950,677
+  Rows after dedup:   832,452
+  Redundant removed:  118,225 (12.44%)
+  Unique epochs lost:       0
+```
+
+### 4. Exclusion of Sparse Debris Fragments
+In `11_apply_tle_count_filter.py`, satellites with fewer than 10 total historical TLEs were audited. Nine satellites (NORAD IDs: `100822`, `101037`, `101038`, `101040`, `101041`, `101042`, `101047`, `101070`, `101384`) had only 1 to 8 records across their tracking life:
+- These sparse fragments cannot support windowed rolling operations or numerical time differencing.
+- Removing these 18 observations dropped the satellite count from 204 to **195 well-tracked satellites** (832,434 rows, each with $\ge 15$ TLE observations; median 3,834).
+
+### 5. Adoption of Native Space-Track Geometries
+Prior scripts re-calculated semi-major axis, apoapsis, and periapsis using numerical equations:
+$$a = \left(\frac{\mu}{n^2}\right)^{1/3}, \quad r_p = a(1-e) - R_E, \quad r_a = a(1+e) - R_E$$
+The pipeline now directly consumes Space-Track's native `SEMIMAJOR_AXIS`, `APOAPSIS`, `PERIAPSIS`, and `PERIOD` derived during SGP4 ephemeris generation, eliminating floating-point rounding divergence and standardizing unit definitions.
+
+### 6. Target Formulation & Latency Noise Clipping
+The prediction target is remaining orbital lifetime in fractional solar days:
+$$\text{days\_to\_decay} = \frac{t_{\text{CATALOG\_DECAY\_DATE}} - t_{\text{EPOCH}}}{86,400\text{ seconds}}$$
+Because TLEs are published with operational latency, terminal observations frequently carry epochs recorded within hours after the official catalog decay date, producing small negative values:
+- Observations with $\text{days\_to\_decay} \in [-1.0, 0.0)$ are clipped to $0.0$, representing active decay at terminal observation.
+- Large negative outliers ($<-1.0\text{ day}$) are isolated and reported for manual audit.
+
+### 7. Dynamic Rates & Rolling Feature Engineering
+Orbital decay accelerates exponentially in its terminal phase. In `src/modeling/01_build_features.py`, static orbital parameters are augmented with:
+- **Rate-of-Change Metrics:** First numerical time derivatives $\Delta \text{param} / \Delta t$:
+  - `periapsis_rate`: Altitude decay velocity in $\text{km/day}$.
+  - `mean_motion_rate`: Drag acceleration in $\text{rev/day}^2$.
+  - `bstar_rate`: Drag parameter trend.
+  - `eccentricity_rate`: Orbit circularization velocity.
+- **Rolling Averages:** Multi-span rolling means over 5, 10, and 20 TLE records for `MEAN_MOTION`, `BSTAR`, `ECCENTRICITY`, and `PERIAPSIS`.
+- **Drag Volatility:** Multi-span rolling standard deviation of $B^*$ (`bstar_std5`, `bstar_std10`, `bstar_std20`) tracking atmospheric turbulence.
+- **Relative Lifetime Index:** Normalized progression along each satellite's observation arc:
+  $$\text{lifetime\_fraction} = \frac{\text{Observation Index}}{N_{\text{observations}} - 1} \in [0.0, 1.0]$$
+
+### 8. Zero-Leakage Group Validation Requirement
+> [!IMPORTANT]
+> Because orbital elements are highly autocorrelated over time, randomly splitting records by row leaks identical satellite states across train and test partitions. All subsequent model evaluation **must use GroupKFold on `NORAD_CAT_ID`**, verifying whether models can predict re-entry for a completely unseen satellite.
 
 ---
 
-# Data Processing Pipeline
+## Exploratory Data Analysis & Empirical Findings
 
-## 1. Historical Data Collection
+### Temporal Distribution & Annual Tracking Density
 
-Historical TLE/OMM records are collected and stored as JSON files under:
+The dataset spans 57 years of spaceflight history (October 1969 to November 2026). While early decades average fewer than 5 active satellites per year, observation frequency increases substantially post-2015 due to high-cadence automated tracking of megaconstellation and smallsat re-entries.
 
-```text
-data/raw/tle_history/
-```
-
-The collection contains historical observations for multiple satellites.
-
-Each original orbital record is treated as an individual observation.
-
-No records are intentionally deduplicated during dataset construction.
-
-## 2. JSON Processing and Dataset Construction
-
-The JSON files are read and converted into a structured tabular dataset.
-
-The processing pipeline:
-
-- Iterates through the historical JSON files.
-- Extracts orbital records.
-- Preserves original API fields and values.
-- Combines observations into a single dataset.
-- Associates records with their corresponding satellite identifiers.
-
-The resulting dataset is stored in CSV and Parquet formats.
-
-## 3. Feature Engineering
-
-Additional orbital parameters are calculated from the available orbital elements.
-
-The following calculations are implemented:
-
-### Semi-major axis
-
-Using mean motion:
-
-\[
-n = \text{MEAN\_MOTION}\times\frac{2\pi}{86400}
-\]
-
-\[
-a = \left(\frac{\mu}{n^2}\right)^{1/3}
-\]
-
-Where:
-
-- \(a\) = semi-major axis in kilometres.
-- \(n\) = mean motion in radians per second.
-- \(\mu\) = Earth's gravitational parameter.
-
-\[
-\mu = 398600.4418\ km^3/s^2
-\]
-
-### Perigee altitude
-
-\[
-h_p = a(1-e)-R_E
-\]
-
-### Apogee altitude
-
-\[
-h_a = a(1+e)-R_E
-\]
-
-Where:
-
-- \(e\) = orbital eccentricity.
-- \(R_E = 6378.137\ km\) = Earth's equatorial radius.
-
-These derived values provide additional information about the orbital geometry.
-
-## 4. Decay Date Integration
-
-The CelesTrak decay catalogue is merged with the historical orbital dataset using the NORAD catalogue identifier.
-
-The resulting field is:
-
-```text
-CATALOG_DECAY_DATE
-```
-
-The original Space-Track `DECAY_DATE` field is retained separately.
-
-A derived field, `DAYS_TO_DECAY`, was also calculated using the difference between the catalogue decay date and orbital epoch:
-
-\[
-DAYS\_TO\_DECAY =
-\frac{t_{\text{decay}}-t_{\text{epoch}}}{86400}
-\]
-
-This represents the time between an orbital observation and the recorded decay date.
-
-It is a derived target-related quantity, not an independent orbital measurement.
-
-## 5. Dataset Formats
-
-Two formats are maintained:
-
-| Format  | Intended use                              |
-| ------- | ----------------------------------------- |
-| CSV     | Human-readable inspection and portability |
-| Parquet | Efficient analytical processing           |
-
-Parquet is the primary format for EDA and subsequent machine learning workflows.
+| Annual Observations | Active Satellites per Year |
+| :---: | :---: |
+| ![Observations per Year](reports/eda/temporal/plots/observations_per_year.png) | ![Satellites per Year](reports/eda/temporal/plots/satellites_per_year.png) |
+| *Observation count evolution across tracking years* | *Unique active decaying satellites tracked per year* |
 
 ---
 
-# Data Validation
+### Orbital Decay Trajectories (Case Studies)
 
-The dataset was validated before exploratory analysis.
+Orbital decay exhibits distinct physical phases: prolonged quasi-linear altitude loss followed by rapid non-linear circularization and terminal plunge.
 
-Validation covered:
+<details open>
+<summary><b>Case Study: NORAD 4133 (Long-Duration High-Cadence Decay)</b></summary>
+<br>
 
-- Expected column presence.
-- Row and column counts.
-- Missing values.
-- Numeric and date validity.
-- Orbital parameter ranges.
-- TLE line checksums.
-- Duplicate satellite and epoch combinations.
-- CSV and Parquet consistency.
-
-### Validation Results
-
-| Metric                          |  Result |
-| ------------------------------- | ------: |
-| Total records                   | 950,677 |
-| Total columns                   |      41 |
-| Unique satellites               |     204 |
-| Invalid TLE checksums           |       0 |
-| Invalid numeric values detected |       0 |
-| CSV/Parquet row-count mismatch  |    None |
-| CSV/Parquet column mismatch     |    None |
-
-Duplicate `(NORAD_CAT_ID, EPOCH)` combinations were observed.
-
-These were flagged for investigation but not automatically removed. Identical epochs do not, by themselves, establish that two observations are redundant or invalid.
-
-### Missing Values
-
-| Column           | Missing records |
-| ---------------- | --------------: |
-| `RCS_SIZE`     |           9,600 |
-| `COUNTRY_CODE` |           1,167 |
-| `LAUNCH_DATE`  |           1,186 |
-| `SITE`         |           1,167 |
-| `DECAY_DATE`   |         950,476 |
-
-The high missing percentage in the original `DECAY_DATE` field is expected from the source data.
-
-The separate `CATALOG_DECAY_DATE` field was successfully mapped for all 950,677 records.
-
----
-
-# Exploratory Data Analysis (EDA)
-
-## Current Status
-
-The initial EDA stage has been completed.
-
-The profiling script is:
-
-```text
-src/data_processing/03_data_profiling.py
-```
-
-It reads:
-
-```text
-data/curated/tle_features.parquet
-```
-
-Generated reports and visualizations are saved under:
-
-```text
-reports/eda/
-```
-
-The EDA process does not modify the curated dataset.
-
-### Analysis Performed
-
-- Dataset overview.
-- Column profiling.
-- Missing-value analysis.
-- Data type inspection.
-- Numeric conversion.
-- Orbital parameter statistics.
-- Constant-column identification.
-- Numerical distribution plots.
-- Epoch coverage analysis.
-
-A separate `analysis_df` copy is used for numerical and datetime analysis. This preserves the original dataset's stored values and data types.
-
-## Dataset Overview
-
-| Metric              |     Value |
-| ------------------- | --------: |
-| Rows                |   950,677 |
-| Columns             |        41 |
-| Memory usage        | 716.79 MB |
-| Unique NORAD IDs    |       204 |
-| Unique epochs       |   773,502 |
-| Unique object names |       197 |
-| Unique object IDs   |       214 |
-
-### Epoch Coverage
-
-| Metric         | Result     |
-| -------------- | ---------- |
-| Earliest epoch | 1969-10-15 |
-| Latest epoch   | 2026-11-18 |
-| Valid epochs   | 950,677    |
-| Invalid epochs | 0          |
-
-The dataset covers a substantial historical period, although the distribution of observations across years is not necessarily uniform.
-
-A yearly analysis is still required to understand the temporal distribution of the collected records.
-
-## Orbital Parameter Statistics
-
-The following statistics were obtained after converting orbital parameters into numeric types.
-
-| Parameter              |         Mean |       Median |      Minimum |       Maximum |
-| ---------------------- | -----------: | -----------: | -----------: | ------------: |
-| Mean Motion            |       14.881 |       15.064 |        2.010 |        16.556 |
-| Eccentricity           |       0.0136 |     0.000488 |     0.000001 |      0.753049 |
-| Inclination            |     70.715° |     69.923° |      3.204° |      99.102° |
-| RA of Ascending Node   |    180.220° |    179.956° |            0 |      359.9996 |
-| Argument of Pericenter |    147.338° |    105.802° |       0.0001 |      359.9995 |
-| Mean Anomaly           |    207.871° |    248.090° |       0.0003 |      359.9990 |
-| BSTAR                  |     0.000959 |     0.000383 |    -0.418040 |      1.202068 |
-| Semi-major Axis        | 7,100.406 km | 6,925.345 km | 6,502.793 km | 26,520.611 km |
-| Period                 |  100.442 min |   95.592 min |   86.978 min |   716.366 min |
-| Apogee                 |   923.994 km |   548.201 km |   130.620 km | 40,113.803 km |
-| Perigee                |   520.548 km |   545.719 km |   104.696 km |  1,937.542 km |
-
-### Initial Observations
-
-**1. Eccentricity**
-
-The median eccentricity is approximately 0.000488.
-
-Most observations therefore correspond to nearly circular orbits. However, the maximum eccentricity of 0.753049 indicates that some objects have substantially more elliptical orbits.
-
-**2. Orbital altitude**
-
-The median perigee altitude is approximately 545.7 km, while the median apogee altitude is approximately 548.2 km.
-
-This indicates that the typical observation in this dataset is from a relatively low-eccentricity orbit.
-
-**3. Orbital period**
-
-The median orbital period is approximately 95.6 minutes.
-
-**4. BSTAR**
-
-BSTAR has a wide range, including negative and unusually large values.
-
-Its distribution and extreme observations require further investigation before using it as a predictive feature.
-
-**5. Temporal coverage**
-
-Although the dataset extends back to 1969, observation density may be concentrated in recent years. This needs to be quantified rather than inferred from the date range alone.
-
-## Constant Columns
-
-The following columns have only one unique value in the current dataset:
-
-```text
-CCSDS_OMM_VERS
-COMMENT
-ORIGINATOR
-CENTER_NAME
-REF_FRAME
-TIME_SYSTEM
-MEAN_ELEMENT_THEORY
-EPHEMERIS_TYPE
-CLASSIFICATION_TYPE
-ELEMENT_SET_NO
-```
-
-These fields currently provide no variation for a predictive model.
-
-They are retained in the curated dataset for source completeness. Their exclusion from a future model feature matrix can be considered separately.
-
----
-
-# Current Project Progress
-
-<details>
-<summary>Completed work</summary>
-
-- [X] Historical orbital data collection.
-- [X] Storage of historical records as JSON.
-- [X] JSON processing and tabular dataset construction.
-- [X] Preservation of original API fields.
-- [X] Semi-major axis calculation.
-- [X] Perigee altitude calculation.
-- [X] Apogee altitude calculation.
-- [X] CelesTrak decay catalogue integration.
-- [X] Separate `CATALOG_DECAY_DATE` field.
-- [X] CSV and Parquet dataset generation.
-- [X] Dataset validation.
-- [X] TLE checksum validation.
-- [X] CSV and Parquet consistency checks.
-- [X] Curated dataset preparation.
-- [X] Initial data profiling.
-- [X] Numeric conversion checks.
-- [X] Orbital parameter descriptive statistics.
-- [X] Constant-column identification.
-- [X] Initial epoch coverage analysis.
+| Altitude Collapse (Periapsis vs. Time) | Drag Acceleration (Mean Motion vs. Time) | Ballistic Drag Coefficient ($B^*$ vs. Time) |
+| :---: | :---: | :---: |
+| ![NORAD 4133 Periapsis](reports/eda/satellite_history/NORAD_4133/periapsis_vs_time.png) | ![NORAD 4133 Mean Motion](reports/eda/satellite_history/NORAD_4133/mean_motion_vs_time.png) | ![NORAD 4133 BSTAR](reports/eda/satellite_history/NORAD_4133/bstar_vs_time.png) |
+| *Steady altitude dissipation followed by steep terminal plunge* | *Hyperbolic increase in revolutions per day near re-entry* | *Severe drag term volatility under dense atmospheric braking* |
 
 </details>
 
 <details>
-<summary>Remaining work</summary>
+<summary><b>Case Study: NORAD 7003</b></summary>
+<br>
 
-- [ ] Inspect numerical distribution plots.
-- [ ] Investigate extreme orbital values.
-- [ ] Examine BSTAR distribution and outliers.
-- [ ] Analyse observation counts per year.
-- [ ] Analyse unique satellite counts per year.
-- [ ] Investigate individual satellite orbital histories.
-- [ ] Perform correlation analysis.
-- [ ] Study orbital decay trends.
-- [ ] Identify useful predictive features.
-- [ ] Prepare a separate model-ready dataset.
-- [ ] Establish appropriate training and testing strategies.
-- [ ] Develop baseline predictive models.
-- [ ] Evaluate model performance.
-- [ ] Investigate prediction accuracy over different time horizons.
+| Altitude Collapse (Periapsis vs. Time) | Drag Acceleration (Mean Motion vs. Time) | Ballistic Drag Coefficient ($B^*$ vs. Time) |
+| :---: | :---: | :---: |
+| ![NORAD 7003 Periapsis](reports/eda/satellite_history/NORAD_7003/periapsis_vs_time.png) | ![NORAD 7003 Mean Motion](reports/eda/satellite_history/NORAD_7003/mean_motion_vs_time.png) | ![NORAD 7003 BSTAR](reports/eda/satellite_history/NORAD_7003/bstar_vs_time.png) |
 
 </details>
 
 ---
 
-# Next Steps
+### Global Parameter Distributions & Correlations
 
-## 1. Complete EDA
+Orbital elements demonstrate expected astrophysical clustering. Low Earth Orbit satellites exhibit near-circular geometries ($e \approx 0$) with orbital periods concentrated between 88 and 100 minutes.
 
-The next stage is to investigate the distributions and relationships between orbital parameters.
+| Global Linear Correlation Matrix | Observation Epoch Distribution |
+| :---: | :---: |
+| ![Correlation Matrix](reports/eda/plots/correlation_matrix.png) | ![Epoch Distribution](reports/eda/plots/epoch_distribution.png) |
+| *Pairwise Pearson correlation across all numerical orbital fields* | *Distribution of observation epochs from 1969 to 2026* |
 
-Particular attention should be given to:
-
-- Eccentricity.
-- BSTAR.
-- Mean motion.
-- Semi-major axis.
-- Perigee altitude.
-- Apogee altitude.
-- Mean motion derivatives.
-
-Extreme values should be investigated before deciding whether they represent valid orbital behaviour, unusual observations, or data-quality problems.
-
-## 2. Temporal Analysis
-
-A major part of this project is understanding how orbital parameters evolve over time.
-
-The next analysis should include:
-
-- Number of observations per year.
-- Number of unique satellites per year.
-- Observation frequency for individual satellites.
-- Changes in perigee altitude over time.
-- Changes in mean motion over time.
-- Changes in BSTAR over time.
-
-Individual satellite histories are especially important because orbital decay is a temporal process.
-
-## 3. Correlation and Feature Analysis
-
-Investigate relationships between orbital parameters and decay-related quantities.
-
-A correlation matrix across the entire dataset can be useful for initial exploration, but it may mix differences between satellites with changes occurring within individual satellites.
-
-Both global and per-satellite analysis should therefore be considered.
-
-## 4. Feature Selection and Target Definition
-
-Before training a model, the prediction task must be defined precisely.
-
-For example:
-
-- Predicting the remaining time until decay.
-- Predicting a future decay date.
-- Predicting whether an object will decay within a specified period.
-
-`CATALOG_DECAY_DATE` and `DAYS_TO_DECAY` are target-related fields. They must not be included as ordinary input features when predicting decay time.
-
-The model should only use information available at the prediction epoch.
-
-## 5. Model Development
-
-After EDA and feature selection:
-
-1. Create a separate model-ready dataset.
-2. Establish a baseline model.
-3. Choose suitable temporal and satellite-aware validation strategies.
-4. Train candidate models.
-5. Evaluate prediction errors.
-6. Compare performance across satellites and orbital regimes.
-
-Care is required when splitting the data. Randomly splitting individual TLE records can put observations from the same satellite and similar epochs into both training and testing sets, producing overly optimistic results.
+| Semi-Major Axis ($a$) | Periapsis Altitude ($r_p$) | Ballistic Drag Term ($B^*$) |
+| :---: | :---: | :---: |
+| ![Semi-Major Axis Distribution](reports/eda/plots/SEMIMAJOR_AXIS_distribution.png) | ![Periapsis Distribution](reports/eda/plots/PERIAPSIS_distribution.png) | ![BSTAR Distribution](reports/eda/plots/BSTAR_distribution.png) |
 
 ---
 
-# Technical Environment
+### Outlier Regimes & High-Eccentricity Orbits
 
-The project uses Python and a data-processing workflow based on Pandas and Parquet.
+Statistical outlier analysis (`06_outlier_analysis.py` and `07_outlier_investigation.py`) confirmed that extreme values in the archive reflect genuine astrodynamics rather than data corruption:
+- **High-Eccentricity Satellites ($e > 0.5$):** Highly elliptical transfer orbits and Molniya-type orbits with apogees exceeding $30,000\text{ km}$ and periapses deep in LEO.
+- **Atmospheric Interface Trajectories:** Observations with perigee altitudes below $130\text{ km}$ correspond to the final orbits immediately preceding destruction.
 
-The scripts are executed using `uv`:
+| Periapsis Outliers | Mean Motion Outliers |
+| :---: | :---: |
+| ![Periapsis Outliers](reports/eda/outliers/plots/periapsis_outliers.png) | ![Mean Motion Outliers](reports/eda/outliers/plots/mean_motion_outliers.png) |
 
+---
+
+## Feature Engineering & Target Correlation Analysis
+
+The final dataset generated by `src/modeling/01_build_features.py` and validated by `src/modeling/02_feature_validation.py` resides at `data/modeling/features.parquet` (832,434 rows, 42 columns).
+
+### Feature Rankings Against Target
+
+Features ranked by absolute monotonic Spearman correlation ($|r_s|$) with `days_to_decay` from [feature_correlations_target.csv](reports/modeling/feature_correlations_target.csv):
+
+| Feature Name | Spearman ($r_s$) | Pearson ($r$) | Type | Astrodynamic Interpretation |
+|---|---:|---:|---|---|
+| `mean_motion_roll20` | **-0.7504** | -0.3260 | Derived (Rolling) | Smoothed orbital velocity; strongest decay predictor |
+| `mean_motion_roll10` | **-0.7504** | -0.3265 | Derived (Rolling) | Medium-window mean motion |
+| `mean_motion_roll5` | **-0.7495** | -0.3268 | Derived (Rolling) | Short-window mean motion |
+| `MEAN_MOTION` | **-0.7479** | -0.3270 | Native Element | Instantaneous revolutions per day |
+| `SEMIMAJOR_AXIS` | **+0.7479** | +0.2022 | Native Orbital | Orbital energy; higher orbits retain longer lifetimes |
+| `PERIOD` | **+0.7478** | +0.1888 | Native Orbital | Orbital period in minutes |
+| `APOAPSIS` | **+0.7447** | +0.1851 | Native Orbital | Apogee altitude |
+| `lifetime_fraction` | **-0.6943** | -0.4796 | Derived (Progress) | Observation position along satellite's timeline |
+| `MEAN_MOTION_DOT` | **-0.5709** | -0.0678 | Native Element | Drag acceleration ($\dot{n}/2$) |
+| `PERIAPSIS` | **+0.5025** | +0.3982 | Native Orbital | Perigee altitude |
+| `periapsis_roll20` | **+0.4973** | +0.3969 | Derived (Rolling) | Smoothed perigee altitude |
+| `mean_motion_rate` | **-0.4919** | -0.0035 | Derived (Rate) | Empirical drag acceleration derivative ($\Delta n / \Delta t$) |
+| `periapsis_rate` | **+0.3214** | +0.0051 | Derived (Rate) | Empirical altitude loss velocity ($\Delta r_p / \Delta t$) |
+| `bstar_roll20` | **-0.2981** | -0.0384 | Derived (Rolling) | Smoothed ballistic drag coefficient |
+| `INCLINATION` | **-0.2741** | -0.1983 | Native Element | Orbital inclination relative to equatorial plane |
+
+### Missing Value Audit & Boundary Effects
+
+Audited in [feature_validation_summary.csv](reports/modeling/feature_validation_summary.csv):
+- **Core Orbital Features:** 0 nulls, 0 infinite values across all 832,434 rows.
+- **Physical Constraints:** 100% compliant with bound orbital mechanics:
+  - $\text{PERIAPSIS} \le \text{APOAPSIS}$ for all rows.
+  - $0 \le \text{ECCENTRICITY} < 1$ for all rows.
+  - $\text{SEMIMAJOR\_AXIS} > R_{\text{Earth}} \ (6,378.14\text{ km})$ for all rows.
+- **Boundary Effect Nulls:** Exactly **195 nulls** ($0.023\%$) appear in `mean_motion_rate`, `periapsis_rate`, `bstar_rate`, `eccentricity_rate`, and `bstar_std5/10/20`.
+  - *Mathematical Cause:* Each satellite's initial historical observation has no preceding observation ($t_{-1}$) to evaluate numerical difference ($\Delta t$), naturally producing a single boundary NaN per satellite ($195 \times 1 = 195$).
+
+---
+
+## Pipeline Execution Guide
+
+All execution is managed via the local virtual environment using `uv` or `python`:
+
+### Stage 1: Ingestion & Preprocessing
 ```bash
-uv run src/data_processing/TLE_json_to_parquet.py
-uv run src/data_processing/02_database_validation.py
-uv run src/data_processing/03_data_profiling.py
+# 1. Consolidate raw Space-Track JSONs and attach CelesTrak decay catalog
+python src/data_processing/01_TLE_json_to_parquet.py
+
+# 2. Execute database checksum and integrity validation
+python src/data_processing/02_database_validation.py
 ```
 
-The current workflow uses:
+### Stage 2: Exploratory Data Analysis
+```bash
+# 3. Generate summary statistics and global parameter plots
+python src/data_processing/03_data_profiling.py
 
-- Python
-- Pandas
-- NumPy
-- PyArrow
-- Matplotlib
-- Parquet
-- JSON
-- CSV
+# 4. Perform annual and temporal tracking distribution analysis
+python src/data_processing/04_temporal_analysis.py
+
+# 5. Extract individual satellite decay trajectories
+python src/data_processing/05_satellite_history_analysis.py
+
+# 6. Flag and investigate orbital element outliers
+python src/data_processing/06_outlier_analysis.py
+python src/data_processing/07_outlier_investigation.py
+
+# 7. Audit duplicate epochs and confirm chronological GP_ID agreement
+python src/data_processing/08_duplicate_record_investigation.py
+python src/data_processing/09_repeated_epoch_analysis.py
+```
+
+### Stage 3: Deduplication & Filtering
+```bash
+# 8. Apply chronological deduplication (removes 118,225 redundant rows)
+python src/data_processing/10_apply_deduplication.py
+
+# 9. Filter out sparse sub-10-TLE debris fragments (204 -> 195 satellites)
+python src/data_processing/11_apply_tle_count_filter.py
+```
+
+### Stage 4: Feature Extraction & Validation
+```bash
+# 10. Extract dynamic rates, rolling features, and compute days_to_decay
+python src/modeling/01_build_features.py
+
+# 11. Run full physical sanity checks and correlation validation
+python src/modeling/02_feature_validation.py
+```
 
 ---
 
-# Important Data Handling Decisions
+## Current Project Status & Roadmap
 
-1. Original raw JSON files are preserved.
-2. Original API fields are not overwritten during feature engineering.
-3. Original `DECAY_DATE` and catalogue-derived `CATALOG_DECAY_DATE` remain separate.
-4. Duplicate satellite/epoch combinations are not automatically removed.
-5. The curated dataset is not modified by EDA scripts.
-6. Parquet is the primary analytical format.
-7. CSV is retained for inspection and portability.
-8. Feature selection will produce a separate model-ready dataset.
-9. Target-related fields must be excluded from model inputs to prevent data leakage.
+```text
+Pipeline Phase Status:
+  [========================================================================] 100% Data Ingestion & Preprocessing
+  [========================================================================] 100% Exploratory Data Analysis
+  [========================================================================] 100% Chronological Deduplication
+  [========================================================================] 100% Debris Filtering & Quality Audit
+  [========================================================================] 100% Feature Engineering & Validation
+  [>-----------------------------------------------------------------------]   0% Machine Learning Modeling
+```
+
+### Completed Work
+- [x] Lossless raw data ingestion across 204 Space-Track JSON archives.
+- [x] External CelesTrak decay catalog join (100% ground-truth label match).
+- [x] TLE checksum verification and data integrity checks.
+- [x] Empirical analysis of orbital distributions, tracking density, and temporal coverage.
+- [x] Detailed trajectory case studies of terminal satellite plunge (NORAD 4133, NORAD 7003).
+- [x] Chronological analysis of 118,225 duplicate epoch pairs proving 99.98% `GP_ID` agreement.
+- [x] Production deduplication pipeline preserving unique epochs.
+- [x] Debris filtering isolating 195 well-tracked satellites ($\ge 15$ TLEs each).
+- [x] Feature engineering pipeline deriving rates of change, rolling stats, and drag volatility.
+- [x] Physical orbital constraint validation and target correlation audit.
+
+### Modeling Roadmap (Immediate Next Steps)
+- [ ] **Satellite-Grouped Splitting (`03_train_test_split.py`):** Implement `GroupKFold` / `GroupShuffleSplit` on `NORAD_CAT_ID` to strictly enforce zero data leakage across satellites.
+- [ ] **Baseline Extrapolation (`04_baseline_models.py`):** Implement a naive linear decay baseline extrapolating current altitude loss velocity ($\Delta r_p / \Delta t$).
+- [ ] **Gradient Boosted Decision Trees (`05_train_lgbm.py`):** Train and tune LightGBM, XGBoost, and CatBoost regressors on tabular features.
+- [ ] **Horizon-Specific Performance Metrics:** Quantify MAE and RMSE across operational decay horizons:
+  - Immediate ($< 7\text{ days}$)
+  - Short-term ($7 \text{ to } 30\text{ days}$)
+  - Medium-term ($30 \text{ to } 90\text{ days}$)
+  - Long-term ($> 90\text{ days}$)
+- [ ] **Feature Importance & Ablation:** Compute SHAP (Shapley Additive Explanations) values to determine the relative impact of smoothed mean motion vs. instantaneous drag volatility ($B^*$).
 
 ---
 
-# Current Project Status
-
-**Stage: Data collection, preprocessing, validation, and initial EDA completed.**
-
-The project currently has a structured historical orbital dataset containing approximately 950,000 observations across 204 satellites.
-
-Historical orbital information has been combined with catalogue decay dates, validated, and prepared for exploratory analysis.
-
-The next major milestone is to understand the temporal behaviour of individual satellites and determine which orbital parameters provide useful information about future orbital decay.
-
-The machine learning stage has not yet started.
-
----
-
-*This README reflects the current development state of the project. Update the progress checklist and findings as subsequent analysis and modelling stages are completed.*
+*Project status verified against `data/modeling/features.parquet` (832,434 rows, 195 satellites, 42 features). All data processing and feature engineering stages are fully reproducible via the scripts in `src/`.*
