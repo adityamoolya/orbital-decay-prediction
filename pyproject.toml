@@ -11,6 +11,7 @@ dependencies = [
     "pyarrow>=26.0.1",
     "python-dotenv>=1.2.4",
     "requests>=2.34.2",
+    "scikit-learn>=1.9.1",
     "scipy>=1.18.1",
     "spacetrack>=2.1.0",
 ]
