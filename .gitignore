@@ -23,3 +23,6 @@ data/curated/tle_features_modeling.parquet
 data/modeling/.~lock.features.csv#
 *.joblib
 !models/hgb_variant_d_combined.joblib
+*.npy
+*.pt
+*npz

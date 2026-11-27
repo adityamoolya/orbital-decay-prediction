@@ -14,4 +14,5 @@ dependencies = [
     "scikit-learn>=1.9.1",
     "scipy>=1.18.1",
     "spacetrack>=2.1.0",
+    "torch>=2.15.0",
 ]
