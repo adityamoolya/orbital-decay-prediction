@@ -2,6 +2,12 @@
 
 Predicts remaining on-orbit lifetime (`days_to_decay`) and terminal atmospheric re-entry timelines for Earth-orbiting satellites from historical Two-Line Element (TLE) observations.
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white" alt="Python 3.14+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Managed%20with-uv-DE5FE9?logo=uv&logoColor=white" alt="Managed with uv">
+</p>
+
 - **Headline Result:** **2.44 days MAE (15.9% relative error)** on `< 30-day` terminal re-entry prediction, down from **38.55 days MAE (250.1% relative error)** on the baseline `HistGradientBoosting` model.
 - **Dataset Scale:** **832,434 curated TLE observations** across **195 decayed LEO satellites** spanning **57 years** of Space-Track & CelesTrak history (1969–2026).
 - **Evaluation Rigor:** Strict **80/20 satellite-level split** (156 train / 39 held-out test satellites) — zero temporal or entity leakage across partitions.
