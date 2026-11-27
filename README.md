@@ -103,9 +103,22 @@ satelite/
 │   │   ├── 10_apply_deduplication.py             # Production deduplication engine
 │   │   └── 11_apply_tle_count_filter.py          # Exclusion of sparse sub-10-TLE debris fragments
 │   │
-│   └── modeling/
-│       ├── 01_build_features.py                  # Label formulation, dynamic rates, and rolling stats
-│       └── 02_feature_validation.py              # Physics validation, null audit, target correlations
+│   ├── modeling/
+│   │   ├── 01_build_features.py                  # Label formulation, dynamic rates, and rolling stats
+│   │   ├── 02_feature_validation.py              # Physics validation, null audit, target correlations
+│   │   └── 03_train_test_split.py                # Satellite-level 80/20 partitioner & skew auditor
+│   │
+│   └── training/
+│       ├── data_loader.py                        # Shared data loader & strict zero-overlap verification
+│       ├── trainers/                             # Dedicated model training scripts
+│       │   ├── 01_train_linear_regression.py
+│       │   ├── 02_train_random_forest.py
+│       │   ├── 03_train_hist_gradient_boosting.py
+│       │   └── train_baseline_models.py          # Unified runner for all 3 baselines
+│       └── evaluation/                           # Dedicated diagnostics & evaluation scripts
+│           ├── 01_bucketed_error_analysis.py     # Horizon-specific error breakdown (<30d, 30-180d, etc.)
+│           ├── 02_outlier_inspection.py          # Investigation of 5,000d vs 12,000d residual cluster
+│           └── 03_evaluate_improvements.py       # Systematic benchmarking of Variants A, B, C, & Combined
 │
 ├── reports/
 │   ├── eda/

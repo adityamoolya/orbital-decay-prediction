@@ -21,3 +21,4 @@ data/curated/tle_features_modeling.parquet
 *.csv
 *.parquet
 data/modeling/.~lock.features.csv#
+*.joblib
